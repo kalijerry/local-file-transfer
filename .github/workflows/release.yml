@@ -1,12 +1,31 @@
-# 发版：只有推送 vX.Y.Z 格式的标签（如 v0.1.0、v1.2.3）才会发版。
-#   git tag v0.1.0 && git push origin v0.1.0
-# 标签必须打在 main 上已有的提交上。
+# 发版。两种方式，效果相同：
+#
+# 1. 在 GitHub 网页上一键发版（推荐）：
+#    Actions → Release → Run workflow（分支选 main）
+#    - 不填版本号：按「递增方式」在最新的 vX.Y.Z 基础上自动 +1
+#    - 填写版本号：使用指定的 X.Y.Z（必须大于现有的最新版本）
+#    工作流会在 main 的最新提交上创建 vX.Y.Z 标签并发布 Release。
+#
+# 2. 命令行推送标签：
+#    git tag v0.1.0 && git push origin v0.1.0
+#    标签必须是严格的 vX.Y.Z 格式，并且打在 main 上已有的提交上。
 name: Release
 
 on:
   push:
     tags:
       - "v[0-9]+.[0-9]+.[0-9]+"
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "递增方式（未填写版本号时使用）：patch 0.1.0→0.1.1，minor 0.1.0→0.2.0，major 0.1.0→1.0.0"
+        type: choice
+        options: [patch, minor, major]
+        default: patch
+      version:
+        description: "指定版本号 X.Y.Z（可选，例如 1.0.0；填写后忽略递增方式）"
+        type: string
+        required: false
 
 permissions:
   contents: write
@@ -19,25 +38,65 @@ jobs:
   release:
     runs-on: ubuntu-latest
     steps:
-      - name: Check tag format
-        run: |
-          if [[ ! "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "::error::标签 $GITHUB_REF_NAME 不是 vX.Y.Z 格式，不发版"
-            exit 1
-          fi
-          echo "APP_VERSION_NAME=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
-
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Check tag is on main
+      - name: Determine version
+        env:
+          BUMP: ${{ inputs.bump }}
+          VERSION_INPUT: ${{ inputs.version }}
         run: |
-          git fetch origin main
-          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
-            echo "::error::标签 $GITHUB_REF_NAME 指向的提交不在 main 上，请先合并到 main 再打标签"
-            exit 1
+          set -euo pipefail
+          semver='^v[0-9]+\.[0-9]+\.[0-9]+$'
+          latest=$(git tag -l 'v*' | grep -E "$semver" | sort -V | tail -n1 || true)
+
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            if [ "$GITHUB_REF" != "refs/heads/main" ]; then
+              echo "::error::只能从 main 分支发版，请在 Run workflow 时选择 main"
+              exit 1
+            fi
+            version="$(printf '%s' "$VERSION_INPUT" | tr -d '[:space:]')"
+            version="${version#v}"
+            if [ -z "$version" ]; then
+              IFS=. read -r major minor patch <<< "${latest#v}"
+              major=${major:-0}; minor=${minor:-0}; patch=${patch:-0}
+              case "$BUMP" in
+                major) major=$((major + 1)); minor=0; patch=0 ;;
+                minor) minor=$((minor + 1)); patch=0 ;;
+                *)     patch=$((patch + 1)) ;;
+              esac
+              version="$major.$minor.$patch"
+            fi
+            tag="v$version"
+            if [[ ! "$tag" =~ $semver ]]; then
+              echo "::error::版本号 $version 不是 X.Y.Z 格式"
+              exit 1
+            fi
+            if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+              echo "::error::标签 $tag 已存在，请换一个版本号"
+              exit 1
+            fi
+            if [ -n "$latest" ] && [ "$(printf '%s\n%s\n' "$latest" "$tag" | sort -V | tail -n1)" != "$tag" ]; then
+              echo "::error::新版本 $tag 必须大于当前最新版本 $latest，否则手机上无法覆盖升级"
+              exit 1
+            fi
+          else
+            tag="$GITHUB_REF_NAME"
+            if [[ ! "$tag" =~ $semver ]]; then
+              echo "::error::标签 $tag 不是 vX.Y.Z 格式，不发版"
+              exit 1
+            fi
+            git fetch origin main
+            if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+              echo "::error::标签 $tag 指向的提交不在 main 上，请先合并到 main 再打标签"
+              exit 1
+            fi
           fi
+
+          echo "发版版本：$tag（上一个版本：${latest:-无}）"
+          echo "TAG=$tag" >> "$GITHUB_ENV"
+          echo "APP_VERSION_NAME=${tag#v}" >> "$GITHUB_ENV"
 
       - uses: actions/setup-java@v4
         with:
@@ -69,17 +128,30 @@ jobs:
       - name: Collect APK
         run: |
           mkdir -p dist
-          cp app/build/outputs/apk/release/app-release.apk "dist/TransferHub-${GITHUB_REF_NAME}.apk"
+          cp app/build/outputs/apk/release/app-release.apk "dist/TransferHub-${TAG}.apk"
           # 固定文件名，供下载页使用 releases/latest/download/TransferHub.apk 这个永久链接
           cp app/build/outputs/apk/release/app-release.apk dist/TransferHub.apk
           (cd dist && sha256sum *.apk > SHA256SUMS.txt && cat SHA256SUMS.txt)
 
+      # 手动发版时，标签由这一步在当前 main 提交上创建
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          name: 传送站 ${{ github.ref_name }}
+          tag_name: ${{ env.TAG }}
+          target_commitish: ${{ github.sha }}
+          name: 传送站 ${{ env.TAG }}
           generate_release_notes: true
+          make_latest: true
           files: |
-            dist/TransferHub-${{ github.ref_name }}.apk
+            dist/TransferHub-${{ env.TAG }}.apk
             dist/TransferHub.apk
             dist/SHA256SUMS.txt
+
+      - name: Summary
+        run: |
+          {
+            echo "## 已发布 传送站 $TAG"
+            echo ""
+            echo "- Release：$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/tag/$TAG"
+            echo "- 最新版永久下载链接：$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/latest/download/TransferHub.apk"
+          } >> "$GITHUB_STEP_SUMMARY"
