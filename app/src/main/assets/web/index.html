@@ -1,0 +1,315 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<title>传送站</title>
+<style>
+  :root {
+    --bg: #f6f8fa; --card: #ffffff; --text: #1f2328; --muted: #656d76;
+    --border: #d0d7de; --brand: #1f6feb; --brand-weak: #ddf4ff;
+    --ok: #1a7f37; --err: #cf222e; --tag-in: #ddf4ff; --tag-out: #fbefff;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0d1117; --card: #161b22; --text: #e6edf3; --muted: #8d96a0;
+      --border: #30363d; --brand: #4493f8; --brand-weak: #0c2d6b;
+      --ok: #3fb950; --err: #f85149; --tag-in: #0c2d6b; --tag-out: #3c1e4a;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    padding: env(safe-area-inset-top) 0 env(safe-area-inset-bottom);
+  }
+  main { max-width: 720px; margin: 0 auto; padding: 16px; }
+  header { display: flex; align-items: center; gap: 10px; margin: 8px 0 16px; }
+  header h1 { font-size: 20px; margin: 0; }
+  header .dev { color: var(--muted); font-size: 13px; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--ok); flex: none; }
+  .dot.off { background: var(--err); }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 16px; margin-bottom: 16px; }
+  .drop {
+    display: block;
+    border: 2px dashed var(--border); border-radius: 12px; padding: 28px 16px; text-align: center;
+    cursor: pointer; transition: background .15s, border-color .15s;
+  }
+  .drop.over { border-color: var(--brand); background: var(--brand-weak); }
+  #queue:not(:empty) { margin-top: 12px; }
+  .drop strong { display: block; font-size: 17px; margin-bottom: 4px; }
+  .drop span { color: var(--muted); font-size: 13px; }
+  .btn {
+    display: inline-block; border: 1px solid var(--border); background: var(--card); color: var(--text);
+    border-radius: 8px; padding: 6px 12px; font-size: 14px; text-decoration: none; cursor: pointer;
+  }
+  .btn.primary { background: var(--brand); border-color: var(--brand); color: #fff; }
+  .btn.danger { color: var(--err); }
+  h2 { font-size: 16px; margin: 0 0 12px; display: flex; align-items: center; justify-content: space-between; }
+  .item { display: flex; align-items: center; gap: 10px; padding: 10px 0; border-top: 1px solid var(--border); }
+  .item:first-of-type { border-top: none; }
+  .item .info { flex: 1; min-width: 0; }
+  .item .name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .item .meta { color: var(--muted); font-size: 12px; }
+  .tag { font-size: 11px; padding: 1px 6px; border-radius: 6px; flex: none; }
+  .tag.in { background: var(--tag-in); }
+  .tag.out { background: var(--tag-out); }
+  .actions { display: flex; gap: 6px; flex: none; }
+  .bar { height: 6px; background: var(--border); border-radius: 3px; overflow: hidden; margin-top: 4px; }
+  .bar > i { display: block; height: 100%; width: 0; background: var(--brand); transition: width .2s; }
+  .done .bar > i { background: var(--ok); }
+  .fail .bar > i { background: var(--err); }
+  .empty { color: var(--muted); text-align: center; padding: 16px 0; }
+  .error { color: var(--err); }
+  footer { color: var(--muted); font-size: 12px; text-align: center; margin: 24px 0; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <span class="dot" id="dot"></span>
+    <div>
+      <h1>传送站</h1>
+      <div class="dev" id="device">正在连接…</div>
+    </div>
+  </header>
+
+  <div class="card error" id="authError" hidden>
+    访问令牌无效或已过期。传送站每次重启都会生成新的二维码，请重新扫码打开。
+  </div>
+
+  <div id="app">
+    <div class="card">
+      <label class="drop" id="drop">
+        <strong>点击选择文件，或拖拽到这里</strong>
+        <span>支持多选，文件会保存到传送站手机的「下载/TransferHub」</span>
+        <input type="file" id="picker" multiple hidden>
+      </label>
+      <div id="queue"></div>
+    </div>
+
+    <div class="card">
+      <h2>
+        <span>传送站文件</span>
+        <button class="btn" id="refresh" type="button">刷新</button>
+      </h2>
+      <div id="files"><div class="empty">加载中…</div></div>
+    </div>
+  </div>
+
+  <footer>传送站 · 局域网直传，文件不经过任何云端服务器</footer>
+</main>
+
+<script>
+(function () {
+  "use strict";
+
+  // ------------------------------------------------------------ 令牌
+  var params = new URLSearchParams(location.search);
+  var token = params.get("t");
+  try {
+    if (token) sessionStorage.setItem("hubToken", token);
+    else token = sessionStorage.getItem("hubToken");
+  } catch (e) { /* 隐私模式下 sessionStorage 可能不可用 */ }
+  token = token || "";
+
+  function api(path) {
+    return path + (path.indexOf("?") >= 0 ? "&" : "?") + "t=" + encodeURIComponent(token);
+  }
+
+  var $ = function (id) { return document.getElementById(id); };
+  var allowDelete = false;
+
+  function showAuthError() {
+    $("authError").hidden = false;
+    $("app").hidden = true;
+    $("dot").className = "dot off";
+    $("device").textContent = "未授权";
+  }
+
+  function formatSize(n) {
+    if (n < 0) return "未知大小";
+    if (n < 1024) return n + " B";
+    var u = ["KB", "MB", "GB", "TB"], i = -1;
+    do { n /= 1024; i++; } while (n >= 1024 && i < u.length - 1);
+    return (n >= 100 ? n.toFixed(0) : n.toFixed(1)) + " " + u[i];
+  }
+
+  function formatTime(t) {
+    var d = new Date(t);
+    var p = function (x) { return (x < 10 ? "0" : "") + x; };
+    return p(d.getMonth() + 1) + "-" + p(d.getDate()) + " " + p(d.getHours()) + ":" + p(d.getMinutes());
+  }
+
+  function el(tag, cls, text) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text != null) e.textContent = text;
+    return e;
+  }
+
+  // ------------------------------------------------------------ 信息与文件列表
+  function loadInfo() {
+    fetch(api("/api/info"), { cache: "no-store" }).then(function (r) {
+      if (r.status === 401) { showAuthError(); throw new Error("unauthorized"); }
+      return r.json();
+    }).then(function (info) {
+      allowDelete = !!info.allowDelete;
+      $("device").textContent = "已连接 · " + info.name;
+      $("dot").className = "dot";
+    }).catch(function (e) {
+      if (e.message !== "unauthorized") {
+        $("device").textContent = "连接中断，正在重试…";
+        $("dot").className = "dot off";
+      }
+    });
+  }
+
+  var lastListing = "";
+  function loadFiles() {
+    return fetch(api("/api/files"), { cache: "no-store" }).then(function (r) {
+      if (r.status === 401) { showAuthError(); throw new Error("unauthorized"); }
+      return r.text();
+    }).then(function (text) {
+      $("dot").className = "dot";
+      if (text === lastListing) return;
+      lastListing = text;
+      renderFiles(JSON.parse(text).files);
+    }).catch(function () {
+      $("dot").className = "dot off";
+    });
+  }
+
+  function renderFiles(files) {
+    var box = $("files");
+    box.innerHTML = "";
+    if (!files.length) {
+      box.appendChild(el("div", "empty", "暂无文件。上传的文件会出现在这里，其他设备也能下载。"));
+      return;
+    }
+    files.forEach(function (f) {
+      var row = el("div", "item");
+      var received = f.source === "received";
+      row.appendChild(el("span", "tag " + (received ? "in" : "out"), received ? "收到" : "分享"));
+      var info = el("div", "info");
+      info.appendChild(el("div", "name", f.name));
+      info.appendChild(el("div", "meta", formatSize(f.size) + " · " + formatTime(f.time)));
+      row.appendChild(info);
+
+      var actions = el("div", "actions");
+      var dl = el("a", "btn primary", "下载");
+      dl.href = api("/api/files/" + f.id);
+      dl.setAttribute("download", f.name);
+      actions.appendChild(dl);
+      if (allowDelete) {
+        var del = el("button", "btn danger", "删除");
+        del.type = "button";
+        del.onclick = function () {
+          if (!confirm("从传送站移除「" + f.name + "」？")) return;
+          fetch(api("/api/files/" + f.id), { method: "DELETE" }).then(loadFiles);
+        };
+        actions.appendChild(del);
+      }
+      row.appendChild(actions);
+      box.appendChild(row);
+    });
+  }
+
+  // ------------------------------------------------------------ 上传
+  var queue = [];
+  var uploading = false;
+
+  function enqueue(fileList) {
+    for (var i = 0; i < fileList.length; i++) {
+      var f = fileList[i];
+      var row = el("div", "item");
+      var info = el("div", "info");
+      info.appendChild(el("div", "name", f.name));
+      var meta = el("div", "meta", formatSize(f.size) + " · 等待中");
+      info.appendChild(meta);
+      var bar = el("div", "bar");
+      var fill = el("i");
+      bar.appendChild(fill);
+      info.appendChild(bar);
+      row.appendChild(info);
+      $("queue").appendChild(row);
+      queue.push({ file: f, row: row, meta: meta, fill: fill });
+    }
+    next();
+  }
+
+  function next() {
+    if (uploading || !queue.length) return;
+    uploading = true;
+    var job = queue.shift();
+    var f = job.file;
+    var xhr = new XMLHttpRequest();
+    var started = Date.now();
+    xhr.open("PUT", api("/api/upload?name=" + encodeURIComponent(f.name)));
+    if (f.type) xhr.setRequestHeader("Content-Type", f.type);
+    xhr.upload.onprogress = function (e) {
+      if (!e.lengthComputable) return;
+      var pct = e.loaded / e.total * 100;
+      var secs = Math.max((Date.now() - started) / 1000, 0.001);
+      job.fill.style.width = pct.toFixed(1) + "%";
+      job.meta.textContent = formatSize(e.loaded) + " / " + formatSize(e.total) +
+        " · " + formatSize(e.loaded / secs) + "/s";
+    };
+    xhr.onload = function () {
+      if (xhr.status === 401) { showAuthError(); }
+      if (xhr.status >= 200 && xhr.status < 300) {
+        job.row.className = "item done";
+        job.fill.style.width = "100%";
+        var secs = Math.max((Date.now() - started) / 1000, 0.001);
+        job.meta.textContent = formatSize(f.size) + " · 已完成 · 平均 " + formatSize(f.size / secs) + "/s";
+        loadFiles();
+      } else {
+        fail(job, xhr.responseText || ("HTTP " + xhr.status));
+      }
+      finish();
+    };
+    xhr.onerror = function () { fail(job, "网络错误"); finish(); };
+    xhr.send(f);
+  }
+
+  function fail(job, msg) {
+    job.row.className = "item fail";
+    job.meta.textContent = "失败：" + msg;
+  }
+
+  function finish() {
+    uploading = false;
+    next();
+  }
+
+  // ------------------------------------------------------------ 事件
+  var drop = $("drop");
+  $("picker").addEventListener("change", function (e) {
+    enqueue(e.target.files);
+    e.target.value = "";
+  });
+  ["dragenter", "dragover"].forEach(function (t) {
+    drop.addEventListener(t, function (e) { e.preventDefault(); drop.classList.add("over"); });
+  });
+  ["dragleave", "drop"].forEach(function (t) {
+    drop.addEventListener(t, function (e) { e.preventDefault(); drop.classList.remove("over"); });
+  });
+  drop.addEventListener("drop", function (e) {
+    if (e.dataTransfer && e.dataTransfer.files.length) enqueue(e.dataTransfer.files);
+  });
+  // 防止文件拖到页面其他位置时浏览器直接打开它
+  window.addEventListener("dragover", function (e) { e.preventDefault(); });
+  window.addEventListener("drop", function (e) { e.preventDefault(); });
+  $("refresh").addEventListener("click", function () { lastListing = ""; loadInfo(); loadFiles(); });
+
+  if (!token) { showAuthError(); return; }
+  loadInfo();
+  loadFiles();
+  setInterval(loadFiles, 3000);
+  setInterval(loadInfo, 15000);
+})();
+</script>
+</body>
+</html>
