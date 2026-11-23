@@ -4,8 +4,20 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
-// CI 每次构建自动递增版本号，便于在手机上覆盖安装升级
-val buildNumber = (System.getenv("GITHUB_RUN_NUMBER") ?: "1").toInt()
+// 版本号规则：
+// - 发版（推送 vX.Y.Z 标签）：APP_VERSION_NAME=X.Y.Z，versionCode = X*1000000 + Y*1000 + Z
+// - 日常 CI / 本地构建：versionName = 0.0.<构建号>-dev，versionCode = 构建号
+val releaseVersion: String? = System.getenv("APP_VERSION_NAME")?.takeIf { it.isNotBlank() }
+val buildNumber = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull() ?: 1
+
+fun versionCodeOf(version: String): Int {
+    val parts = version.split(".").map { it.toInt() }
+    require(parts.size == 3 && parts[1] < 1000 && parts[2] < 1000) { "版本号必须是 X.Y.Z：$version" }
+    return parts[0] * 1_000_000 + parts[1] * 1_000 + parts[2]
+}
+
+// 发布签名：配置了 RELEASE_KEYSTORE_FILE 等环境变量（来自 GitHub Secrets）时使用正式密钥，否则沿用仓库内的调试密钥
+val releaseKeystore: String? = System.getenv("RELEASE_KEYSTORE_FILE")?.takeIf { it.isNotBlank() }
 
 android {
     namespace = "com.transferhub.app"
@@ -15,8 +27,8 @@ android {
         applicationId = "com.transferhub.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = buildNumber
-        versionName = "0.1.$buildNumber"
+        versionCode = releaseVersion?.let(::versionCodeOf) ?: buildNumber
+        versionName = releaseVersion ?: "0.0.$buildNumber-dev"
     }
 
     signingConfigs {
@@ -28,6 +40,19 @@ android {
             keyAlias = "androiddebugkey"
             keyPassword = "android"
         }
+        create("release") {
+            if (releaseKeystore != null) {
+                storeFile = file(releaseKeystore)
+                storePassword = System.getenv("RELEASE_KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("RELEASE_KEY_ALIAS")
+                keyPassword = System.getenv("RELEASE_KEY_PASSWORD")
+            } else {
+                storeFile = file("debug.keystore")
+                storePassword = "android"
+                keyAlias = "androiddebugkey"
+                keyPassword = "android"
+            }
+        }
     }
 
     buildTypes {
@@ -36,7 +61,7 @@ android {
         }
         release {
             isMinifyEnabled = false
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.getByName("release")
         }
     }
 
