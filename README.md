@@ -21,14 +21,67 @@
 
 > 提示：如果手机同时开着热点和 Wi-Fi，界面上会出现多个网络标签，选择对方所在的网络后再扫码。
 
-## 获取 APK
+## 下载
 
-每次推送代码，GitHub Actions 都会自动编译：
+正式版下载页：**https://kalijerry.github.io/local-file-transfer/**
 
-- 打开仓库的 **Actions** 页面 → 选择最新一次 **Build APK** → 在页面底部的 **Artifacts** 下载 `TransferHub-0.1.N`（下载后是一个 zip，里面是 APK）
-- 推送 `v*` 标签（如 `v0.1.0`）时，会自动发布到 **Releases** 页面
+也可以直接用永久链接下载最新正式版：`https://github.com/kalijerry/local-file-transfer/releases/latest/download/TransferHub.apk`
 
-APK 使用仓库内固定的调试签名（`app/debug.keystore`），所以新版本可以直接覆盖安装。正式发布前应换成存放在 GitHub Secrets 中的发布密钥。
+## 分支与发版流程
+
+| 操作 | 会发生什么 |
+|---|---|
+| 提 PR / 合并进 `main` | 只编译 APK，放在 Actions 的构建产物（Artifacts）里供测试，**不发版** |
+| 手动运行 Actions → **Release** / 推送 `vX.Y.Z` 标签 | 编译正式版 APK，自动创建 GitHub Release，下载页随之显示新版本 |
+| 修改 `site/` 并合并进 `main` | 重新部署下载页 |
+
+### 发版方式一：网页上一键发版（推荐）
+
+仓库 **Actions → Release → Run workflow**，分支选 `main`：
+
+- **不填版本号**：在最新的 `vX.Y.Z` 基础上自动递增。`patch`：0.1.0 → 0.1.1；`minor`：0.1.0 → 0.2.0；`major`：0.1.0 → 1.0.0。还没有发过版时，`patch` 得到 0.0.1，`minor` 得到 0.1.0
+- **填写版本号**（如 `1.0.0`）：使用指定版本，必须大于当前最新版本
+
+工作流会在 `main` 的最新提交上创建标签，并发布 Release。
+
+### 发版方式二：命令行推送标签
+
+标签必须打在 `main` 上已有的提交上，否则会被拒绝：
+
+```bash
+git checkout main && git pull
+```
+
+```bash
+git tag v0.1.0
+```
+
+```bash
+git push origin v0.1.0
+```
+
+### 版本号规则
+
+- 只有严格的 `vX.Y.Z` 格式才会发版，`v1.0`、`v1.0.0-beta`、`release-1` 等格式都会被忽略或拒绝。
+- 正式版的 `versionCode = X×1000000 + Y×1000 + Z`，保证新版本总能覆盖安装旧版本。
+- 日常构建的版本号为 `0.0.<构建号>-dev`，只用于测试。装过正式版后，不能再覆盖安装开发版（系统不允许降级），需要先卸载。
+
+### 签名
+
+默认使用仓库里的调试密钥（`app/debug.keystore`）签名。要使用正式密钥，在仓库的 **Settings → Secrets and variables → Actions** 中添加以下四项，之后打标签时就会自动用正式密钥签名：
+
+| Secret | 内容 |
+|---|---|
+| `RELEASE_KEYSTORE_BASE64` | 密钥库文件的 base64（`base64 -w0 release.jks`） |
+| `RELEASE_KEYSTORE_PASSWORD` | 密钥库密码 |
+| `RELEASE_KEY_ALIAS` | 密钥别名 |
+| `RELEASE_KEY_PASSWORD` | 密钥密码 |
+
+> 注意：更换签名密钥后，新版本无法覆盖安装旧签名的版本，需要先卸载。最好在发布第一个正式版之前就决定好用哪把密钥。
+
+### 首次启用下载页
+
+在仓库 **Settings → Pages → Build and deployment → Source** 中选择 **GitHub Actions**，然后在 Actions 页面手动运行一次 *Deploy download page*（之后修改 `site/` 并合并进 `main` 时会自动部署）。
 
 ## 本地编译
 
@@ -49,6 +102,7 @@ APK 使用仓库内固定的调试签名（`app/debug.keystore`），所以新�
 | `data/HubRepository.kt` | 传送站文件索引：接收写入 MediaStore，分享文件引用与持久化 |
 | `assets/web/index.html` | 给其他设备用的传输网页（无外部依赖，离线可用） |
 | `ui/HubScreen.kt` | Jetpack Compose 主界面 |
+| `site/` | GitHub Pages 下载页（在浏览器端读取最新 Release） |
 
 ### HTTP 接口
 
